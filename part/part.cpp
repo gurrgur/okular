@@ -3318,7 +3318,6 @@ void Part::slotPrint()
 #else
     QPrinter printer;
 #endif
-    QPrintDialog *printDialog = nullptr;
     QWidget *printConfigWidget = nullptr;
 
     // Must do certain QPrinter setup before creating QPrintDialog
@@ -3331,35 +3330,35 @@ void Part::slotPrint()
         printConfigWidget = new DefaultPrintOptionsWidget();
     }
 
-    printDialog = new QPrintDialog(&printer, widget());
-    printDialog->setWindowTitle(i18nc("@title:window", "Print"));
+    QPrintDialog printDialog(&printer, widget());
+    printDialog.setWindowTitle(i18nc("@title:window", "Print"));
     QList<QWidget *> options;
     if (printConfigWidget) {
         options << printConfigWidget;
     }
-    printDialog->setOptionTabs(options);
+    printDialog.setOptionTabs(options);
 
     // Set the available Print Range
-    printDialog->setMinMax(1, m_document->pages());
-    printDialog->setFromTo(1, m_document->pages());
+    printDialog.setMinMax(1, m_document->pages());
+    printDialog.setFromTo(1, m_document->pages());
 
     // If the user has bookmarked pages for printing, then enable Selection
     if (!m_document->bookmarkedPageRange().isEmpty()) {
-        printDialog->addEnabledOption(QAbstractPrintDialog::PrintSelection);
+        printDialog.addEnabledOption(QAbstractPrintDialog::PrintSelection);
     }
 
     // If the Document type doesn't support print to both PS & PDF then disable the Print Dialog option
-    if (printDialog->isOptionEnabled(QAbstractPrintDialog::PrintToFile) && !m_document->supportsPrintToFile()) {
-        printDialog->setEnabledOptions(printDialog->enabledOptions() ^ QAbstractPrintDialog::PrintToFile);
+    if (printDialog.isOptionEnabled(QAbstractPrintDialog::PrintToFile) && !m_document->supportsPrintToFile()) {
+        printDialog.setEnabledOptions(printDialog.enabledOptions() ^ QAbstractPrintDialog::PrintToFile);
     }
 
     // Enable the Current Page option in the dialog.
     if (m_document->pages() > 1 && currentPage() > 0) {
-        printDialog->setOption(QAbstractPrintDialog::PrintCurrentPage);
+        printDialog.setOption(QAbstractPrintDialog::PrintCurrentPage);
     }
 
     bool success = true;
-    if (printDialog->exec()) {
+    if (printDialog.exec()) {
         // set option for margins if widget is of corresponding type that holds this information
         PrintOptionsWidget *optionWidget = dynamic_cast<PrintOptionsWidget *>(printConfigWidget);
         if (optionWidget != nullptr)
@@ -3372,7 +3371,7 @@ void Part::slotPrint()
 
         success = doPrint(printer);
     }
-    delete printDialog;
+
     if (m_cliPrintAndExit)
         exit(success ? EXIT_SUCCESS : EXIT_FAILURE);
 }
