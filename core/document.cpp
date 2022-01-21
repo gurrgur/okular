@@ -4121,7 +4121,7 @@ void Document::processFormatAction(const Action *action, Okular::FormFieldText *
     }
 }
 
-void Document::processKeystrokeAction(const Action *action, Okular::FormFieldText *fft, bool &returnCode)
+void Document::processKeystrokeAction(const Action *action, Okular::FormFieldText *fft, bool &returnCode, bool willCommit)
 {
     if (action->actionType() != Action::Script) {
         qCDebug(OkularCoreDebug) << "Unsupported action type" << action->actionType() << "for keystroke.";
@@ -4136,6 +4136,7 @@ void Document::processKeystrokeAction(const Action *action, Okular::FormFieldTex
     }
 
     std::shared_ptr<Event> event = Event::createKeystrokeEvent(fft, d->m_pagesVector[foundPage]);
+    event->setWillCommit(willCommit);
 
     const ScriptAction *linkscript = static_cast<const ScriptAction *>(action);
 
