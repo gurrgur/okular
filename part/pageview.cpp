@@ -35,6 +35,7 @@
 #include <QMenu>
 #include <QMimeData>
 #include <QMimeDatabase>
+#include <QOpenGLWidget>
 #include <QPainter>
 #include <QScrollBar>
 #include <QScroller>
@@ -61,6 +62,7 @@
 #include <kwidgetsaddons_version.h>
 
 // system includes
+#include <iostream>
 #include <array>
 #include <math.h>
 #include <stdlib.h>
@@ -129,6 +131,352 @@ TableSelectionPart::TableSelectionPart(PageViewItem *item_p, const Okular::Norma
     , rectInItem(rectInItem_p)
     , rectInSelection(rectInSelection_p)
 {
+}
+
+class timeline_item
+{
+public:
+    long timestamp;
+    int x;
+    int y;
+    timeline_item(long ts, int xx, int yy) {
+        timestamp = ts;
+        x = xx;
+        y = yy;
+    };
+};
+
+class MsdScroller
+{
+public:
+    MsdScroller(float dampening_ratio, float natural_frequency);
+    ~MsdScroller();
+
+    // configuration parameters
+    float w; // natural frequency (omega_n)
+    float c; // dampening ratio (Ceta)
+
+    int minx;
+    int maxx;
+    int miny;
+    int maxy;
+
+    // state
+    // initial position
+    int px0;
+    int py0;
+
+    // store last computed position
+    int px_pre;
+    int py_pre;
+
+    // initial velocity
+    float vx0;
+    float vy0;
+
+    // helper variables
+    float a1x;
+    float a1y;
+    float a2x;
+    float a2y;
+
+    // start time
+    qint64 ts0;
+
+    // velocity estimation
+    size_t timeline_max_size;
+    float estimation_time; // [ms] velocity estimation
+    std::vector<timeline_item> timeline;
+
+    // target position
+    int px1;
+    int py1;
+
+    // FIXME: enforce minimum velocity of 1px per frame swap
+
+    // methods
+
+    void overridePosition(int x, int y);
+    void setTargetPosition(int x, int y);
+    void setTargetDelta(int dx, int dy);
+    void setInitialState(int x, int y, float vx, float vy);
+    QPoint getTargetPositionFromState(int x, int y, float vx, float vy);
+    void setRangeX(int min, int max);
+    void setRangeY(int min, int max);
+    QPoint getCurrentPosition();
+    QPointF getCurrentVelocity();
+    void handleMouseDown(long ts, int x, int y);
+    void handleMouseMove(long ts, int x, int y);
+    void handleMouseUp(long ts, int x, int y);
+    void stop();
+};
+
+MsdScroller::MsdScroller(float dampening_ratio, float natural_frequency)
+{
+    w = natural_frequency;
+    c = dampening_ratio;
+
+    timeline_max_size = 50;
+    estimation_time = 50; 
+
+    px1 = 0;
+    py1 = 0;
+    px0 = 0;
+    py0 = 0;
+
+    px_pre = 0;
+    py_pre = 0;
+
+    vx0 = 0.0;
+    vy0 = 0.0;
+    a1x = 0.0;
+    a1y = 0.0;
+    a2x = 0.0;
+    a2y = 0.0;
+    ts0 = QDateTime::currentMSecsSinceEpoch();
+    minx =  maxx =  miny =  maxy = 0;
+}
+
+void MsdScroller::overridePosition(int x, int y)
+{
+    // std::cout << "overridePosition y " << y << std::endl;
+    x = qMin(maxx, qMax(minx, x));
+    y = qMin(maxy, qMax(miny, y));
+    px1 = x;
+    py1 = y;
+    px0 = x;
+    py0 = y;
+    vx0 = 0.0;
+    vy0 = 0.0;
+    a1x = 0.0;
+    a1y = 0.0;
+    a2x = 0.0;
+    a2y = 0.0;
+    ts0 = QDateTime::currentMSecsSinceEpoch();
+    // reuse previous last emitted position
+    px_pre = px1;
+    py_pre = py1;
+    // std::cout << "overridePosition y " << y << std::endl;
+}
+
+void MsdScroller::setTargetPosition(int x, int y)
+{
+    // save last emitted position
+    int xpre = px_pre;
+    int ypre = py_pre;
+
+    // set current state as new initial state
+    QPoint p0 = getCurrentPosition();
+    QPointF v0 = getCurrentVelocity();
+    setInitialState(p0.x(), p0.y(), v0.x(), v0.y());
+
+    // update new target position
+    x = qMin(maxx, qMax(minx, x));
+    y = qMin(maxy, qMax(miny, y));
+    px1 = x;
+    py1 = y;
+    setInitialState(p0.x(), p0.y(), v0.x(), v0.y());
+
+    // reuse previous last emitted position
+    px_pre = xpre;
+    py_pre = ypre;
+
+    printf("setTargetPosition\n");
+}
+
+void MsdScroller::setTargetDelta(int dx, int dy)
+{
+    // save last emitted position
+    int xpre = px_pre;
+    int ypre = py_pre;
+
+    // set current state as new initial state
+    QPoint p0 = getCurrentPosition();
+    QPointF v0 = getCurrentVelocity();
+    setInitialState(p0.x(), p0.y(), v0.x(), v0.y());
+
+    // update new target position
+    int x = qMin(maxx, qMax(minx, px1 + dx));
+    int y = qMin(maxy, qMax(miny, py1 + dy));
+    px1 = x;
+    py1 = y;
+    setInitialState(p0.x(), p0.y(), v0.x(), v0.y());
+
+    // reuse previous last emitted position
+    px_pre = xpre;
+    py_pre = ypre;
+
+    printf("setTargetDelta\n");
+}
+
+void MsdScroller::setInitialState(int x, int y, float vx, float vy)
+{
+    ts0 = QDateTime::currentMSecsSinceEpoch();
+
+    px0 = qMin(maxx, qMax(minx, x));
+    py0 = qMin(maxy, qMax(miny, y));
+    vx0 = vx;
+    vy0 = vy;
+
+    int dx = px1 - px0;
+    int dy = py1 - py0;
+
+    double cc = sqrt(pow(c, 2) - 1);
+    a1x = (-vx + (-c + cc) * w * dx) / (2 * w * cc);
+    a2x = (+vx + (+c + cc) * w * dx) / (2 * w * cc);
+
+    a1y = (-vy + (-c + cc) * w * dy) / (2 * w * cc);
+    a2y = (+vy + (+c + cc) * w * dy) / (2 * w * cc);
+    
+    printf("setInitialState dy %d a1y %.6f a2y %.3e cc %.3e\n", dy, a1y, a2y, cc);
+}
+
+QPoint MsdScroller::getTargetPositionFromState(int x, int y, float vx, float vy)
+{
+    // eq derived from d²/dt² [x(t=0)] = 0
+    double cc = sqrt(pow(c, 2) - 1);
+    double c1 = -c - cc;
+    double c2 = -c + cc;
+    double mul = - (c2 * c2 - c1 * c1) / (c1 * c1 * c2 - c1 * c2 * c2);
+
+    double dx = mul * vx / w;
+    double dy = mul * vy / w;
+
+    int x_tgt = int(round(x + dx));
+    int y_tgt = int(round(y + dy));
+    std::cout << "getTargetPositionFromState x_tgt " << x_tgt << " y_tgt " << y_tgt << " miny " << miny << " maxy " << maxy << std::endl;
+    return QPoint(qMin(maxx, qMax(minx, x_tgt)), qMin(maxy, qMax(miny, y_tgt)));
+}
+
+void MsdScroller::setRangeX(int min, int max)
+{
+    std::cout << "setRangeX min " << min << " max " << max << std::endl;
+    minx = min;
+    maxx = max;
+}
+
+void MsdScroller::setRangeY(int min, int max)
+{
+    std::cout << "setRangeY min " << min << " max " << max << std::endl;
+    miny = min;
+    maxy = max;
+}
+
+QPoint MsdScroller::getCurrentPosition()
+{
+    // std::cout << "get current position" << std::endl;
+    float t = (QDateTime::currentMSecsSinceEpoch() - ts0) / 1000.0;
+    float cc = sqrt(pow(c, 2) - 1);
+    float a1 = (-c - cc) * w;
+    float a2 = (-c + cc) * w;
+    int x = px1 -int(round(a1x * (exp(a1 * t)) + a2x * (exp(a2 * t))));
+    int y = py1 -int(round(a1y * (exp(a1 * t)) + a2y * (exp(a2 * t))));
+    px_pre = x;
+    py_pre = y;
+
+    // printf("getCurrentPosition y0 %d y1 %d y(t) %.3e dt[ms] %.3e ypre %d\n", py0, py1, y, 1000 * t, py_pre);
+    
+    return QPoint(qMin(maxx, qMax(minx, x)), qMin(maxy, qMax(miny, y)));
+}
+
+QPointF MsdScroller::getCurrentVelocity()
+{
+    // printf("getCurrentPosition\n");
+    float t = (QDateTime::currentMSecsSinceEpoch() - ts0) / 1000.0;
+    float cc = sqrt(pow(c, 2) - 1);
+    float a1 = (-c - cc) * w;
+    float a2 = (-c + cc) * w;
+    float vx = a1 * a1x * (exp(a1 * t)) + a2 * a2x * (exp(a2 * t));
+    float vy = a1 * a1y * (exp(a1 * t)) + a2 * a2y * (exp(a2 * t));
+    return QPointF(vx, vy);
+}
+
+void MsdScroller::stop()
+{
+    QPoint p = getCurrentPosition();
+    px1 = p.x();
+    py1 = p.y();
+    setInitialState(p.x(), p.y(), 0.0, 0.0);
+}
+
+void MsdScroller::handleMouseDown(long ts, int x, int y)
+{
+    timeline.clear();
+    timeline_item val = timeline_item(ts, x, y);
+    timeline.insert(std::begin(timeline), val);
+}
+
+void MsdScroller::handleMouseMove(long ts, int x, int y)
+{
+    timeline_item val = timeline_item(ts, x, y);
+    timeline.insert(std::begin(timeline), val);
+    if (timeline.size() > timeline_max_size)
+        timeline.pop_back();
+}
+
+void MsdScroller::handleMouseUp(long ts, int x, int y)
+{
+
+    // save last emitted position
+    int xpre = px_pre;
+    int ypre = py_pre;
+
+    std::cout << "handle mouse up " << xpre << std::endl;
+
+
+    // not enough events; do nothing
+    if (timeline.size() < 2)
+    {
+        timeline.clear();
+        return;
+    }
+
+    int n_est = 0;
+    float vx_est = 0.0;
+    float vy_est = 0.0;
+
+    int x_pre = x;
+    int y_pre = y;
+    qint64 ts_pre = ts;
+
+    for(auto it = std::next(std::begin(timeline)); it != std::end(timeline); ++it) {
+        qint64 ts_age = ts - it->timestamp;
+        if (ts_age <= estimation_time) 
+        {
+            float dt = ts_pre - it->timestamp;
+            if (dt > 0)
+            {
+                vx_est += (x_pre - it->x) / float(ts_pre - it->timestamp);
+                vy_est += (y_pre - it->y) / float(ts_pre - it->timestamp);
+                n_est += 1;
+
+                ts_pre = it->timestamp;
+                x_pre = it->x;
+                y_pre = it->y;
+            }
+
+        } else {
+            break;
+        }
+    }
+
+    if (n_est >= 1)
+    {
+        vx_est = 1000 * vx_est / n_est;
+        vy_est = 1000 * vy_est / n_est;
+
+        QPoint pos = getCurrentPosition();
+        QPoint target = getTargetPositionFromState(pos.x(), pos.y(), vx_est, vy_est);
+        px1 = target.x();
+        py1 = target.y();
+        setInitialState(pos.x(), pos.y(), vx_est, vy_est);
+        
+        std::cout << "handle mouse up |  vx_est " << vx_est << " vy_est " << vy_est << " target_x " << px1 << " target_y " << py1 << std::endl;
+    }
+
+    px_pre = xpre;
+    py_pre = ypre;
+    timeline.clear();
 }
 
 // structure used internally by PageView for data storage
@@ -256,6 +604,7 @@ public:
     QActionGroup *mouseModeActionGroup;
     ToggleActionMenu *aMouseModeMenu;
     QAction *aFitWindowToPage;
+    QOpenGLWidget *glWidget;
 
     int setting_viewCols;
     bool rtl_Mode;
@@ -266,6 +615,7 @@ public:
     const Okular::ObjectRect *mouseOverLinkObject;
 
     QScroller *scroller;
+    MsdScroller *msd_scroller;
 };
 
 PageViewPrivate::PageViewPrivate(PageView *qq)
@@ -387,6 +737,10 @@ PageView::PageView(QWidget *parent, Okular::Document *document)
     d->aMouseMagnifier = nullptr;
     d->aFitWindowToPage = nullptr;
     d->trimBoundingBox = Okular::NormalizedRect(); // Null box
+    d->glWidget = new QOpenGLWidget(this);
+    d->glWidget->resize(0, 0);
+    d->glWidget->setMouseTracking(false);
+    d->glWidget->setEnabled(false);
 
     switch (Okular::Settings::zoomMode()) {
     case 0: {
@@ -433,6 +787,7 @@ PageView::PageView(QWidget *parent, Okular::Document *document)
     viewport()->setAutoFillBackground(false);
 
     d->scroller = QScroller::scroller(viewport());
+    d->msd_scroller = new MsdScroller(1.1, 20);
 
     QScrollerProperties prop;
     prop.setScrollMetric(QScrollerProperties::DecelerationFactor, 0.3);
@@ -469,11 +824,18 @@ PageView::PageView(QWidget *parent, Okular::Document *document)
     // but are only emitted when the “slider is down”, i. e. not when the user scrolls on the scrollbar.
     // QAbstractSlider::actionTriggered() is emitted in all user input cases,
     // but before the value() changes, so we need queued connection here.
-    auto update_scroller = [=]() {
-        d->scroller->scrollTo(QPoint(horizontalScrollBar()->value(), verticalScrollBar()->value()), 0); // sync scroller with scrollbar
-    };
-    connect(verticalScrollBar(), &QAbstractSlider::actionTriggered, this, update_scroller, Qt::QueuedConnection);
-    connect(horizontalScrollBar(), &QAbstractSlider::actionTriggered, this, update_scroller, Qt::QueuedConnection);
+    // auto update_scroller = [=]() {
+    //     d->msd_scroller->overridePosition(horizontalScrollBar()->value(), verticalScrollBar()->value()); // sync scroller with scrollbar
+    // };
+    // connect(verticalScrollBar(), &QAbstractSlider::hasMouseTracking, this, update_scroller, Qt::QueuedConnection);
+    // connect(horizontalScrollBar(), &QAbstractSlider::valueChanged, this, update_scroller, Qt::QueuedConnection);
+
+    // keep msd_scroller ranges in sync with scroll bars
+    d->msd_scroller->setRangeX(horizontalScrollBar()->minimum(), horizontalScrollBar()->maximum());
+    d->msd_scroller->setRangeY(verticalScrollBar()->minimum(), verticalScrollBar()->maximum());
+    connect(horizontalScrollBar(), &QAbstractSlider::rangeChanged, this, &PageView::slotMsdScrollerSetRangeX);
+    connect(verticalScrollBar(), &QAbstractSlider::rangeChanged, this, &PageView::slotMsdScrollerSetRangeY);
+
 
     connect(&d->dragScrollTimer, &QTimer::timeout, this, &PageView::slotDragScroll);
 
@@ -497,6 +859,8 @@ PageView::PageView(QWidget *parent, Okular::Document *document)
 
     connect(document, &Okular::Document::processMovieAction, this, &PageView::slotProcessMovieAction);
     connect(document, &Okular::Document::processRenditionAction, this, &PageView::slotProcessRenditionAction);
+
+    connect(d->glWidget, &QOpenGLWidget::frameSwapped, this, &PageView::slotFrameSwapped);
 
     // schedule the welcome message
     QMetaObject::invokeMethod(this, "slotShowWelcome", Qt::QueuedConnection);
@@ -533,7 +897,6 @@ void PageView::setupBaseActions(KActionCollection *ac)
     // Zoom actions ( higher scales takes lots of memory! )
     d->aZoom = new KSelectAction(QIcon::fromTheme(QStringLiteral("page-zoom")), i18n("Zoom"), this);
     ac->addAction(QStringLiteral("zoom_to"), d->aZoom);
-    d->aZoom->setEditable(true);
     d->aZoom->setMaxComboViewCount(kZoomValues.size() + 3);
     connect(d->aZoom, QOverload<QAction *>::of(&KSelectAction::triggered), this, &PageView::slotZoom);
     updateZoomText();
@@ -2052,7 +2415,8 @@ void PageView::keyPressEvent(QKeyEvent *e)
             int next_page = d->document->currentPage() - viewColumns();
             d->document->setViewportPage(next_page);
         } else {
-            d->scroller->scrollTo(d->scroller->finalPosition() + QPoint(-horizontalScrollBar()->singleStep(), 0), d->currentShortScrollDuration);
+            d->msd_scroller->setTargetDelta(-horizontalScrollBar()->singleStep(), 0);
+            update();
         }
         break;
     case Qt::Key_Right:
@@ -2062,7 +2426,8 @@ void PageView::keyPressEvent(QKeyEvent *e)
             int next_page = d->document->currentPage() + viewColumns();
             d->document->setViewportPage(next_page);
         } else {
-            d->scroller->scrollTo(d->scroller->finalPosition() + QPoint(horizontalScrollBar()->singleStep(), 0), d->currentShortScrollDuration);
+            d->msd_scroller->setTargetDelta(horizontalScrollBar()->singleStep(), 0);
+            update();
         }
         break;
     case Qt::Key_Escape:
@@ -2156,13 +2521,13 @@ void PageView::tabletEvent(QTabletEvent *e)
 
 void PageView::mouseMoveEvent(QMouseEvent *e)
 {
+    // std::cout << "mouseMoveEvent " << QDateTime::currentMSecsSinceEpoch() << std::endl;
     // For some reason in Qt 5.11.2 (no idea when this started) all wheel
     // events are followed by mouse move events (without changing position),
     // so we only actually reset the controlWheelAccumulatedDelta if there is a mouse movement
     if (e->globalPos() != d->previousMouseMovePos) {
         d->controlWheelAccumulatedDelta = 0;
     }
-    d->previousMouseMovePos = e->globalPos();
 
     // don't perform any mouse action when no document is shown
     if (d->items.isEmpty())
@@ -2217,10 +2582,11 @@ void PageView::mouseMoveEvent(QMouseEvent *e)
             }
             // drag page
             else {
-                if (d->scroller->state() == QScroller::Inactive || d->scroller->state() == QScroller::Scrolling) {
-                    d->mouseGrabOffset = QPoint(0, 0);
-                    d->scroller->handleInput(QScroller::InputPress, e->pos(), e->timestamp() - 1);
-                }
+                // if (d->scroller->state() == QScroller::Inactive || d->scroller->state() == QScroller::Scrolling) {
+                //     d->mouseGrabOffset = QPoint(0, 0);
+                //     // d->scroller->handleInput(QScroller::InputPress, e->pos(), e->timestamp() - 1);
+                // }
+
 
                 setCursor(Qt::ClosedHandCursor);
 
@@ -2230,10 +2596,18 @@ void PageView::mouseMoveEvent(QMouseEvent *e)
                 wrapEdges.setFlag(Qt::BottomEdge, verticalScrollBar()->value() > verticalScrollBar()->minimum());
                 wrapEdges.setFlag(Qt::LeftEdge, horizontalScrollBar()->value() < horizontalScrollBar()->maximum());
                 wrapEdges.setFlag(Qt::RightEdge, horizontalScrollBar()->value() > horizontalScrollBar()->minimum());
-
                 d->mouseGrabOffset -= CursorWrapHelper::wrapCursor(e->pos(), wrapEdges);
 
-                d->scroller->handleInput(QScroller::InputMove, e->pos() + d->mouseGrabOffset, e->timestamp());
+                const QPoint mousePos = e->pos() + d->mouseGrabOffset;
+                const QPoint delta = d->previousMouseMovePos - mousePos;
+
+                d->msd_scroller->overridePosition(d->msd_scroller->px1 + delta.x(), d->msd_scroller->py1 + delta.y());
+                // QPoint p = d->msd_scroller->getCurrentPosition();
+                horizontalScrollBar()->setValue(d->msd_scroller->px1);
+                verticalScrollBar()->setValue(d->msd_scroller->py1);
+                // std::cout << "mouse down and moving" << std::endl;
+                d->msd_scroller->handleMouseMove(e->timestamp(), mousePos.x(), mousePos.y());
+                d->previousMouseMovePos = mousePos;
             }
         } else if (rightButton && !d->mousePressPos.isNull() && d->aMouseSelect) {
             // if mouse moves 5 px away from the press point, switch to 'selection'
@@ -2286,7 +2660,10 @@ void PageView::mouseMoveEvent(QMouseEvent *e)
 
 void PageView::mousePressEvent(QMouseEvent *e)
 {
+    // std::cout << "mousePressEvent " << QDateTime::currentMSecsSinceEpoch() << std::endl;
+
     d->controlWheelAccumulatedDelta = 0;
+    d->previousMouseMovePos = e->pos();
 
     // don't perform any mouse action when no document is shown
     if (d->items.isEmpty())
@@ -2297,10 +2674,7 @@ void PageView::mousePressEvent(QMouseEvent *e)
         return;
 
     // if the page is scrolling, stop it
-    if (d->autoScrollTimer) {
-        d->scrollIncrement = 0;
-        d->autoScrollTimer->stop();
-    }
+    d->msd_scroller->stop();
 
     // if pressing mid mouse button while not doing other things, begin 'continuous zoom' mode
     if (e->button() == Qt::MiddleButton) {
@@ -2314,7 +2688,7 @@ void PageView::mousePressEvent(QMouseEvent *e)
 
     // if we're editing an annotation, dispatch event to it
     if (d->annotator && d->annotator->active()) {
-        d->scroller->stop();
+        d->msd_scroller->stop();
         PageViewItem *pageItem = pickItemOnPoint(eventPos.x(), eventPos.y());
         d->annotator->routeMouseEvent(e, pageItem);
         return;
@@ -2352,7 +2726,8 @@ void PageView::mousePressEvent(QMouseEvent *e)
 
             if (!d->mouseOnRect) {
                 d->mouseGrabOffset = QPoint(0, 0);
-                d->scroller->handleInput(QScroller::InputPress, e->pos(), e->timestamp());
+                // d->scroller->handleInput(QScroller::InputPress, e->pos(), e->timestamp());
+                d->msd_scroller->handleMouseDown(e->timestamp(), e->pos().x(), e->pos().y());
                 d->leftClickTimer.start(QApplication::doubleClickInterval() + 10);
             }
         }
@@ -2479,6 +2854,8 @@ void PageView::mousePressEvent(QMouseEvent *e)
 
 void PageView::mouseReleaseEvent(QMouseEvent *e)
 {
+    // std::cout << "mouseReleaseEvent " << QDateTime::currentMSecsSinceEpoch() << std::endl;
+
     d->controlWheelAccumulatedDelta = 0;
 
     // stop the drag scrolling
@@ -2522,7 +2899,13 @@ void PageView::mouseReleaseEvent(QMouseEvent *e)
 
     switch (d->mouseMode) {
     case Okular::Settings::EnumMouseMode::Browse: {
-        d->scroller->handleInput(QScroller::InputRelease, e->pos() + d->mouseGrabOffset, e->timestamp());
+        // d->scroller->handleInput(QScroller::InputRelease, e->pos() + d->mouseGrabOffset, e->timestamp());
+        std::cout << "mouse up event" << std::endl;
+        const QPoint wrappedPos = e->pos() + d->mouseGrabOffset;
+        d->msd_scroller->handleMouseUp(e->timestamp(), wrappedPos.x(), wrappedPos.y());
+        update();
+        // horizontalScrollBar()->setValue(d->msd_scroller->px_pre);
+        // verticalScrollBar()->setValue(d->msd_scroller->py_pre);
 
         // return the cursor to its normal state after dragging
         if (cursor().shape() == Qt::ClosedHandCursor)
@@ -3156,6 +3539,8 @@ void PageView::mouseDoubleClickEvent(QMouseEvent *e)
 
 void PageView::wheelEvent(QWheelEvent *e)
 {
+    std::cout << "wheelEvent " << QDateTime::currentMSecsSinceEpoch() << std::endl;
+
     if (!d->document->isOpened()) {
         QAbstractScrollArea::wheelEvent(e);
         return;
@@ -3186,7 +3571,7 @@ void PageView::wheelEvent(QWheelEvent *e)
                 newViewport.rePos.enabled = true;
                 newViewport.rePos.normalizedY = 0.0;
                 d->document->setViewport(newViewport);
-                d->scroller->scrollTo(QPoint(horizontalScrollBar()->value(), verticalScrollBar()->value()), 0); // sync scroller with scrollbar
+                d->msd_scroller->overridePosition(horizontalScrollBar()->value(), verticalScrollBar()->value());
             }
         } else if (delta >= QWheelEvent::DefaultDeltasPerStep && !getContinuousMode() && vScroll == verticalScrollBar()->minimum()) {
             // go to prev page
@@ -3199,7 +3584,8 @@ void PageView::wheelEvent(QWheelEvent *e)
                 newViewport.rePos.enabled = true;
                 newViewport.rePos.normalizedY = 1.0;
                 d->document->setViewport(newViewport);
-                d->scroller->scrollTo(QPoint(horizontalScrollBar()->value(), verticalScrollBar()->value()), 0); // sync scroller with scrollbar
+                d->msd_scroller->overridePosition(horizontalScrollBar()->value(), verticalScrollBar()->value());
+                update();
             }
         } else {
             // When the shift key is held down, scroll ten times faster
@@ -3214,7 +3600,8 @@ void PageView::wheelEvent(QWheelEvent *e)
                     slotScrollUp(count);
                 }
             } else {
-                d->scroller->scrollTo(d->scroller->finalPosition() - e->angleDelta() * multiplier / 4.0, 0);
+                QPoint p = - e->angleDelta() * multiplier / 4.0;
+                d->msd_scroller->setTargetDelta(int(round(p.x())), int(round(p.y())));
             }
         }
     }
@@ -4140,6 +4527,8 @@ void PageView::scrollTo(int x, int y, bool smoothMove)
     }
 #endif
 
+    std::cout << "scrollTo " << std::endl;
+
     bool prevState = d->blockPixmapsRequest;
 
     int newValue = -1;
@@ -4148,14 +4537,16 @@ void PageView::scrollTo(int x, int y, bool smoothMove)
 
     d->blockPixmapsRequest = true;
 
-    if (smoothMove)
-        d->scroller->scrollTo(QPoint(x, y), d->currentLongScrollDuration);
-    else
-        d->scroller->scrollTo(QPoint(x, y), 0);
+    if (smoothMove) {
+        d->msd_scroller->setTargetPosition(x, y);
+    } else
+        d->msd_scroller->overridePosition(x, y);
 
     d->blockPixmapsRequest = prevState;
 
     slotRequestVisiblePixmaps(newValue);
+
+    update();
 }
 
 void PageView::toggleFormWidgets(bool on)
@@ -4695,12 +5086,13 @@ void PageView::slotAutoScroll()
     const int scrollOffset[10] = {1, 1, 1, 1, 1, 2, 2, 2, 4, 4};
     d->autoScrollTimer->start(scrollDelay[index]);
     int delta = d->scrollIncrement > 0 ? scrollOffset[index] : -scrollOffset[index];
-    d->scroller->scrollTo(d->scroller->finalPosition() + QPoint(0, delta), scrollDelay[index]);
+    d->msd_scroller->setTargetDelta(0, delta);
+    update();
 }
 
 void PageView::slotDragScroll()
 {
-    scrollTo(horizontalScrollBar()->value() + d->dragScrollVector.x(), verticalScrollBar()->value() + d->dragScrollVector.y());
+    scrollTo(horizontalScrollBar()->value() + d->dragScrollVector.x(), verticalScrollBar()->value() + d->dragScrollVector.y(), true);
     QPoint p = contentAreaPosition() + viewport()->mapFromGlobal(QCursor::pos());
     updateSelection(p);
 }
@@ -4714,6 +5106,43 @@ void PageView::slotShowWelcome()
 void PageView::slotShowSizeAllCursor()
 {
     setCursor(Qt::SizeAllCursor);
+}
+
+void PageView::slotFrameSwapped()
+{
+    // std::cout << "writing scrollbar values " << pos.x() << " " << pos.y() << std::endl;
+    
+    int x_last = d->msd_scroller->px_pre;
+    int y_last = d->msd_scroller->py_pre;
+    int x_bar = horizontalScrollBar()->value();
+    int y_bar = verticalScrollBar()->value();
+    QPoint pos = d->msd_scroller->getCurrentPosition();
+    int x_now = pos.x();
+    int y_now = pos.y();
+
+    // std::cout << "frame swapped | xlast " << x_last << " x_now " << x_now << " x_bar " << x_bar << std::endl;
+    // sync scrollbar to scroller
+    if ((x_bar == x_last) && (x_last != x_now))
+        horizontalScrollBar()->setValue(x_now);
+    // sync scroller to scrollbar
+    else if ((x_bar != x_last) && (x_bar != x_now))
+        {
+            // std::cout << "frame swapped | scrollbar movement horizontal x_last " << x_last << " x_bar " << x_bar  << std::endl;
+            d->msd_scroller->overridePosition(x_bar, d->msd_scroller->py1);
+        }
+    
+    // sync scrollbar to scroller
+    if ((y_bar == y_last) && (y_last != y_now))
+        verticalScrollBar()->setValue(y_now);
+    // sync scroller to scrollbar
+    else if ((y_bar != y_last) && (y_last != y_now))
+    {   
+        // std::cout << "frame swapped | scrollbar movement vertical y_last " << y_last << " y_bar " << y_bar << std::endl;
+        d->msd_scroller->overridePosition(d->msd_scroller->px1, y_bar);
+    }
+    // force updates until animation is done
+    if ((x_now != d->msd_scroller->px1) || (y_now != d->msd_scroller->py1))
+        update();
 }
 
 void PageView::slotHandleWebShortcutAction()
@@ -4741,6 +5170,16 @@ void PageView::slotZoom()
 
     setFocus();
     updateZoom(ZoomFixed);
+}
+
+void PageView::slotMsdScrollerSetRangeX(int min, int max)
+{
+    d->msd_scroller->setRangeX(min, max);
+}
+
+void PageView::slotMsdScrollerSetRangeY(int min, int max)
+{
+    d->msd_scroller->setRangeY(min, max);
 }
 
 void PageView::slotZoomIn()
@@ -4956,11 +5395,12 @@ void PageView::slotScrollUp(int nSteps)
 {
     if (verticalScrollBar()->value() > verticalScrollBar()->minimum()) {
         if (nSteps) {
-            d->scroller->scrollTo(d->scroller->finalPosition() + QPoint(0, -100 * nSteps), d->currentShortScrollDuration);
+            d->msd_scroller->setTargetDelta(0, -100 * nSteps);
         } else {
-            if (d->scroller->finalPosition().y() > verticalScrollBar()->minimum())
-                d->scroller->scrollTo(d->scroller->finalPosition() + QPoint(0, -(1 - Okular::Settings::scrollOverlap() / 100.0) * viewport()->height()), d->currentLongScrollDuration);
+            if (d->msd_scroller->py1 > verticalScrollBar()->minimum())
+                d->msd_scroller->setTargetDelta(0, -(1 - Okular::Settings::scrollOverlap() / 100.0) * viewport()->height());
         }
+        update();
     } else if (!getContinuousMode() && d->document->currentPage() > 0) {
         // Since we are in single page mode and at the top of the page, go to previous page.
         // setViewport() is more optimized than document->setPrevPage and then move view to bottom.
@@ -4978,11 +5418,12 @@ void PageView::slotScrollDown(int nSteps)
 {
     if (verticalScrollBar()->value() < verticalScrollBar()->maximum()) {
         if (nSteps) {
-            d->scroller->scrollTo(d->scroller->finalPosition() + QPoint(0, 100 * nSteps), d->currentShortScrollDuration);
+            d->msd_scroller->setTargetDelta(0, 100 * nSteps);
         } else {
-            if (d->scroller->finalPosition().y() < verticalScrollBar()->maximum())
-                d->scroller->scrollTo(d->scroller->finalPosition() + QPoint(0, (1 - Okular::Settings::scrollOverlap() / 100.0) * viewport()->height()), d->currentLongScrollDuration);
+            if (d->msd_scroller->py1 < verticalScrollBar()->maximum())
+                d->msd_scroller->setTargetDelta(0, (1 - Okular::Settings::scrollOverlap() / 100.0) * viewport()->height());
         }
+        update();
     } else if (!getContinuousMode() && (int)d->document->currentPage() < d->items.count() - 1) {
         // Since we are in single page mode and at the bottom of the page, go to next page.
         // setViewport() is more optimized than document->setNextPage and then move view to top

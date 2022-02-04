@@ -45,6 +45,7 @@ class PageViewPrivate;
 
 class QGestureEvent;
 
+
 /**
  * @short The main view. Handles zoom and continuous mode.. oh, and page
  * @short display of course :-)
@@ -252,6 +253,8 @@ private Q_SLOTS:
     void slotShowWelcome();
     // activated by left click timer
     void slotShowSizeAllCursor();
+    // act on frame swap
+    void slotFrameSwapped();
 
     void slotHandleWebShortcutAction();
     void slotConfigureWebShortcuts();
@@ -286,6 +289,8 @@ private Q_SLOTS:
     void slotTrimToSelectionToggled(bool);
     void slotToggleForms();
     void slotRefreshPage();
+    void slotMsdScrollerSetRangeX(int min, int max);
+    void slotMsdScrollerSetRangeY(int min, int max);
 #ifdef HAVE_SPEECH
     void slotSpeakDocument();
     void slotSpeakCurrentPage();
